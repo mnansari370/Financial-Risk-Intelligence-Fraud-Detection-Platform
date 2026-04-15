@@ -1,0 +1,42 @@
+# Anomaly Detection Configuration
+# Both models trained on LEGITIMATE transactions only
+
+isolation_forest:
+  n_estimators: 200
+  max_samples: "auto"
+  contamination: 0.01       # expected fraud rate in legitimate set (small)
+  max_features: 1.0
+  bootstrap: false
+  n_jobs: 8
+  random_state: 42
+
+autoencoder:
+  # Architecture
+  input_dim: 64             # matches tabular feature count after encoding
+  encoder_dims: [128, 64, 32]
+  latent_dim: 16
+  decoder_dims: [32, 64, 128]
+  activation: "relu"
+  dropout: 0.1
+
+  # Training
+  epochs: 50
+  batch_size: 512
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-5
+  optimizer: "adam"
+  loss: "mse"               # reconstruction loss
+  early_stopping_patience: 8
+
+  # Anomaly threshold: percentile of reconstruction errors on legitimate val set
+  threshold_percentile: 95
+
+data:
+  # Trained ONLY on legitimate transactions
+  train_on_legitimate_only: true
+  processed_features_path: "data/processed/features_tabular.parquet"
+
+paths:
+  isolation_forest_path: "src/models/anomaly/isolation_forest.pkl"
+  autoencoder_checkpoint: "src/models/anomaly/autoencoder.pt"
+  results_dir: "results/anomaly"

@@ -1,0 +1,54 @@
+# Graph Attention Network (GAT) Training Configuration
+model:
+  name: "GAT"
+  in_channels: 64          # input feature dimension (after preprocessing)
+  hidden_channels: 128
+  out_channels: 64
+  num_layers: 3
+  heads: 4                 # attention heads per layer
+  dropout: 0.3
+  residual: true
+
+training:
+  epochs: 100
+  batch_size: 512          # number of transactions per mini-batch
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  optimizer: "adam"
+  scheduler: "cosine"
+  early_stopping_patience: 10
+  grad_clip: 1.0
+
+  # Focal loss parameters (class imbalance)
+  focal_loss:
+    alpha: 0.25
+    gamma: 2.0
+
+  # Temporal graph snapshots
+  snapshot_window_hours: 24
+
+  # Train/val/test split (by timestamp)
+  train_ratio: 0.80
+  val_ratio: 0.10
+  test_ratio: 0.10
+
+data:
+  paysim_path: "data/raw/paysim.csv"
+  ieee_cis_path: "data/raw/ieee_cis_train.csv"
+  processed_graph_path: "data/processed/graph.pt"
+  node_features:
+    transaction: ["amount", "hour", "day_of_week", "merchant_category",
+                  "amount_log", "amount_zscore", "velocity_1h", "velocity_24h"]
+    account: ["avg_tx_amount", "tx_count_30d", "unique_merchants",
+              "account_age_days", "country_code"]
+    merchant: ["category", "avg_tx_amount", "fraud_rate_30d", "tx_volume"]
+
+evaluation:
+  threshold: 0.5           # classification threshold (tuned on val set)
+  target_recall: 0.80      # Precision@80%Recall metric
+  metrics: ["pr_auc", "roc_auc", "f1", "precision_at_recall_80"]
+
+paths:
+  checkpoint_dir: "src/models/gnn/checkpoints"
+  results_dir: "results/gat"
+  log_dir: "results/gat/logs"
