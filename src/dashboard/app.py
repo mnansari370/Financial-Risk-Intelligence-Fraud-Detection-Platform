@@ -1,11 +1,12 @@
 """
 Financial Risk Intelligence & Fraud Detection Dashboard
-Streamlit 5-panel interface:
-  1. Transaction Queue (live alert feed)
-  2. Transaction Detail (per-alert view)
-  3. Graph Visualisation (PyVis neighbourhood)
-  4. SAR Generation Panel (LLM output)
-  5. Scenario Simulator (what-if analysis)
+
+Five tabs:
+  1. Transaction Queue  — ranked alert feed with score distribution
+  2. Alert Detail       — per-transaction breakdown with SHAP waterfall
+  3. Graph View         — PyVis neighbourhood graph
+  4. SAR Generator      — LLM-generated compliance report
+  5. Scenario Simulator — what-if analysis using the XGBoost model
 """
 
 import json
@@ -19,7 +20,6 @@ import streamlit as st
 import torch
 from pyvis.network import Network
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Fraud Detection Platform",
     page_icon="🔍",
@@ -27,7 +27,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.title("Fraud Detection Platform")
 st.sidebar.markdown("*MSc AI — University of Luxembourg*")
 
@@ -43,7 +42,6 @@ score_threshold = st.sidebar.slider("Alert Threshold", 0.0, 1.0, 0.5, 0.01)
 llm_provider = st.sidebar.selectbox("LLM Provider", ["openai", "local"])
 top_k_display = st.sidebar.number_input("Top-K Alerts to Show", 10, 500, 50)
 
-# ── Data loading ──────────────────────────────────────────────────────────────
 
 @st.cache_data
 def load_scores():
@@ -72,7 +70,6 @@ def load_graph():
     return torch.load(path, map_location="cpu")
 
 
-# ── Tab layout ────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🚨 Transaction Queue",
     "🔎 Alert Detail",
@@ -81,9 +78,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "⚙ Scenario Simulator",
 ])
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 1: Transaction Queue
-# ─────────────────────────────────────────────────────────────────────────────
 with tab1:
     st.header("Transaction Alert Queue")
     scores = load_scores()
@@ -100,7 +94,6 @@ with tab1:
             )
             st.metric("Alerts above threshold", len(alerts))
 
-            # Colour code by score
             def score_colour(val):
                 if val >= 0.9:
                     return "background-color: #ff4444; color: white"
@@ -119,7 +112,6 @@ with tab1:
 
             st.dataframe(styled, use_container_width=True)
 
-            # Score distribution
             fig = px.histogram(gat_df, x="score", nbins=50,
                                title="GAT Fraud Score Distribution",
                                color_discrete_sequence=["#e74c3c"])
@@ -127,9 +119,6 @@ with tab1:
                           annotation_text=f"Threshold={score_threshold}")
             st.plotly_chart(fig, use_container_width=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 2: Alert Detail
-# ─────────────────────────────────────────────────────────────────────────────
 with tab2:
     st.header("Alert Detail View")
     scores = load_scores()
@@ -153,19 +142,16 @@ with tab2:
                 col3.metric("Amount", f"${row.get('amount', 0):,.2f}")
 
                 st.subheader("Transaction Details")
-                detail_fields = {k: v for k, v in row.items()
-                                 if k not in ["score"]}
+                detail_fields = {k: v for k, v in row.items() if k not in ["score"]}
                 st.json(detail_fields)
 
-                # SHAP waterfall (if available)
-                shap_path = f"results/shap/xgboost/shap_values_xgb.parquet"
+                shap_path = "results/shap/xgboost/shap_values_xgb.parquet"
                 if Path(shap_path).exists():
                     shap_df = pd.read_parquet(shap_path)
                     if selected_tx in shap_df.get("tx_index", pd.Series()).values:
                         st.subheader("SHAP Feature Contributions")
                         tx_shap = shap_df[shap_df["tx_index"] == selected_tx].iloc[0]
-                        feature_cols = [c for c in shap_df.columns
-                                        if c not in ["tx_index"]]
+                        feature_cols = [c for c in shap_df.columns if c not in ["tx_index"]]
                         shap_vals = {c: float(tx_shap[c]) for c in feature_cols}
                         shap_sorted = sorted(shap_vals.items(),
                                              key=lambda x: abs(x[1]), reverse=True)[:10]
@@ -179,9 +165,6 @@ with tab2:
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 3: Graph Visualisation
-# ─────────────────────────────────────────────────────────────────────────────
 with tab3:
     st.header("Transaction Graph Neighbourhood")
 
@@ -194,12 +177,10 @@ with tab3:
                                               tx_options, key="graph_tx")
             hop = st.slider("Neighbourhood hops", 1, 3, 2)
 
-            # Build a small ego graph for visualisation
             G = nx.DiGraph()
             G.add_node(str(selected_tx_graph), node_type="transaction",
                        color="#e74c3c", size=25, title=f"TX: {selected_tx_graph}")
 
-            # Add dummy neighbours (real version uses actual graph edges)
             row = gat_df[gat_df["tx_id"] == selected_tx_graph].iloc[0]
             sender = str(row.get("sender_id", "ACC-???"))
             receiver = str(row.get("receiver_id", "ACC-???"))
@@ -210,7 +191,6 @@ with tab3:
             G.add_edge(str(selected_tx_graph), sender, label="sent_by")
             G.add_edge(str(selected_tx_graph), receiver, label="received_by")
 
-            # Render with PyVis
             net = Network(height="500px", width="100%", directed=True,
                           bgcolor="#1a1a2e", font_color="white")
             net.from_nx(G)
@@ -225,12 +205,9 @@ with tab3:
                 html_content = f.read()
             st.components.v1.html(html_content, height=520, scrolling=False)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 4: SAR Generator
-# ─────────────────────────────────────────────────────────────────────────────
 with tab4:
     st.header("SAR Report Generator")
-    st.markdown("*Generates EU-compliant Suspicious Activity Reports using LLM*")
+    st.markdown("*Generates EU AMLD6-compliant Suspicious Activity Reports using LLM*")
 
     scores = load_scores()
     if scores:
@@ -254,7 +231,6 @@ with tab4:
 
                         sar = gen.generate(transaction_data, fraud_scores)
 
-                        # Display results
                         risk_colours = {
                             "CRITICAL": "🔴", "HIGH": "🟠",
                             "MEDIUM": "🟡", "LOW": "🟢"
@@ -282,16 +258,13 @@ with tab4:
                         st.info("Make sure OPENAI_API_KEY is set in your .env file, "
                                 "or switch to 'local' provider.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 5: Scenario Simulator
-# ─────────────────────────────────────────────────────────────────────────────
 with tab5:
     st.header("What-If Scenario Simulator")
     st.markdown("Modify transaction features and see how the model score changes.")
 
     model_artifact = load_xgb_model()
     if model_artifact is None:
-        st.warning("XGBoost model not found. Train it first: `sbatch slurm/train_gat.sh`")
+        st.warning("XGBoost model not found. Train it first: `python -m src.models.baseline.xgboost_pipeline`")
     else:
         model = model_artifact["model"]
         feature_cols = model_artifact["feature_cols"]
@@ -325,7 +298,6 @@ with tab5:
         st.metric("Decision", "🚨 FRAUD" if score >= threshold else "✅ LEGIT",
                   delta=f"threshold={threshold:.3f}")
 
-        # Gauge chart
         fig = px.bar(x=["Fraud Score"], y=[score],
                      color=[score], color_continuous_scale="RdYlGn_r",
                      range_y=[0, 1],

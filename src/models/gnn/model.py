@@ -1,13 +1,3 @@
-"""
-Graph Attention Network (GAT) for fraud detection.
-
-Architecture:
-  - 3-layer GATConv on the 'transaction' node type
-  - Heterogeneous message passing via to_homogeneous projection
-  - Focal loss for class imbalance
-  - Final binary classification head
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,7 +5,8 @@ from torch_geometric.nn import GATConv, HeteroConv, Linear
 
 
 class FocalLoss(nn.Module):
-    """Focal loss for extreme class imbalance (Lin et al., 2017)."""
+    """Focal loss (Lin et al., 2017) — down-weights easy negatives so the model
+    focuses on the hard-to-classify fraud cases."""
 
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
@@ -33,12 +24,11 @@ class FocalLoss(nn.Module):
 
 class FraudGAT(nn.Module):
     """
-    Heterogeneous GAT for transaction fraud detection.
+    Heterogeneous GAT over transaction/account/merchant nodes.
 
-    Node types: transaction, account, merchant
-    Edge types: (transaction, sent_by, account),
-                (transaction, received_by, account),
-                (transaction, at, merchant)
+    Each transaction node attends over its sender/receiver accounts and merchant,
+    and reverse edges let account/merchant nodes push information back.
+    The final classification head scores transaction nodes only.
     """
 
     def __init__(self,
@@ -54,32 +44,29 @@ class FraudGAT(nn.Module):
         self.dropout = dropout
         self.num_layers = num_layers
 
-        # ── Input projections ─────────────────────────────────────────────────
+        # Project each node type to the same hidden dimension before message passing
         self.tx_proj  = Linear(tx_in_channels,  hidden_channels)
         self.acc_proj = Linear(acc_in_channels, hidden_channels)
         self.mer_proj = Linear(mer_in_channels, hidden_channels)
 
-        # ── Heterogeneous GAT layers ──────────────────────────────────────────
         self.convs = nn.ModuleList()
         for i in range(num_layers):
             in_ch = hidden_channels if i == 0 else hidden_channels * heads
             conv = HeteroConv({
-                ("transaction", "sent_by", "account"):    GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("transaction", "received_by", "account"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("transaction", "at", "merchant"):         GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                # Reverse edges for bidirectional message passing
-                ("account",  "rev_sent_by",      "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("account",  "rev_received_by",  "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("merchant", "rev_at",           "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
+                ("transaction", "sent_by",      "account"):  GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
+                ("transaction", "received_by",  "account"):  GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
+                ("transaction", "at",           "merchant"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
+                # Reverse edges so accounts/merchants can also send messages back
+                ("account",  "rev_sent_by",     "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
+                ("account",  "rev_received_by", "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
+                ("merchant", "rev_at",          "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
             }, aggr="sum")
             self.convs.append(conv)
 
-        # ── Batch norms ───────────────────────────────────────────────────────
         self.bns = nn.ModuleList([
             nn.BatchNorm1d(hidden_channels * heads) for _ in range(num_layers)
         ])
 
-        # ── Classification head (operates on transaction nodes only) ─────────
         self.head = nn.Sequential(
             Linear(hidden_channels * heads, out_channels),
             nn.ReLU(),
@@ -89,7 +76,6 @@ class FraudGAT(nn.Module):
 
     def forward(self, x_dict: dict, edge_index_dict: dict,
                 return_attention: bool = False):
-        # Project all node types to the same dimension
         h = {
             "transaction": F.relu(self.tx_proj(x_dict["transaction"])),
             "account":     F.relu(self.acc_proj(x_dict["account"])),
@@ -104,21 +90,17 @@ class FraudGAT(nn.Module):
             else:
                 h_new = conv(h, edge_index_dict)
 
-            # Apply batch norm + activation on transaction nodes
             h_new["transaction"] = self.bns[i](h_new["transaction"])
             h_new = {k: F.relu(v) for k, v in h_new.items()}
             h_new = {k: F.dropout(v, p=self.dropout, training=self.training)
                      for k, v in h_new.items()}
 
-            # Residual connection (same shape after first layer)
             if i > 0:
                 h_new = {k: h_new[k] + h.get(k, 0) for k in h_new}
 
             h = h_new
 
-        # Classification: only transaction nodes are scored
-        tx_emb = h["transaction"]
-        logits = self.head(tx_emb).squeeze(-1)
+        logits = self.head(h["transaction"]).squeeze(-1)
 
         if return_attention:
             return logits, attention_weights

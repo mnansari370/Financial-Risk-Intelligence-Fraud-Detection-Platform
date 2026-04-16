@@ -1,20 +1,7 @@
-"""
-Graph Construction Pipeline
-Builds PyTorch Geometric HeteroData objects from raw transaction logs.
-
-Nodes:
-  - transaction: one node per transaction
-  - account: one node per unique account (sender/receiver)
-  - merchant: one node per unique merchant
-
-Edges:
-  - transaction → account (sender)
-  - transaction → account (receiver)
-  - transaction → merchant
-  - account → account (shared transactions within 24h window)
-
-Temporal snapshots: one PyG graph per 24h window.
-"""
+# Graph construction pipeline: builds PyG HeteroData objects from raw transaction CSVs.
+# Three node types: transaction, account, merchant.
+# Edges: transaction→account (sent_by / received_by), transaction→merchant (at).
+# Output: temporal snapshots (one graph per 24h window), split 80/10/10 by timestamp.
 
 import argparse
 import logging
@@ -30,8 +17,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 
-# ── Feature engineering helpers ──────────────────────────────────────────────
-
 def add_time_features(df: pd.DataFrame, ts_col: str = "timestamp") -> pd.DataFrame:
     df = df.copy()
     dt = pd.to_datetime(df[ts_col])
@@ -42,7 +27,7 @@ def add_time_features(df: pd.DataFrame, ts_col: str = "timestamp") -> pd.DataFra
 
 
 def compute_velocity(df: pd.DataFrame, window_hours: int = 1) -> pd.Series:
-    """Number of transactions from the same sender in the last `window_hours`."""
+    """Count how many transactions the same sender made in the last `window_hours`."""
     df = df.sort_values("timestamp")
     window_ns = window_hours * 3600 * 1_000_000_000
     df["ts_ns"] = pd.to_datetime(df["timestamp"]).astype(np.int64)
@@ -59,7 +44,6 @@ def compute_velocity(df: pd.DataFrame, window_hours: int = 1) -> pd.Series:
 
 
 def build_account_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate per-account statistics from transaction history."""
     sender_stats = df.groupby("sender_id").agg(
         avg_tx_amount=("amount", "mean"),
         tx_count_30d=("amount", "count"),
@@ -69,7 +53,6 @@ def build_account_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_merchant_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate per-merchant statistics."""
     stats = df.groupby("merchant_id").agg(
         avg_tx_amount=("amount", "mean"),
         tx_volume=("amount", "count"),
@@ -78,17 +61,14 @@ def build_merchant_features(df: pd.DataFrame) -> pd.DataFrame:
     return stats
 
 
-# ── Graph snapshot builder ────────────────────────────────────────────────────
-
 def build_snapshot(df_window: pd.DataFrame,
                    account_features: pd.DataFrame,
                    merchant_features: pd.DataFrame,
                    tx_feature_cols: list[str]) -> HeteroData:
-    """Build a single HeteroData snapshot from one time window."""
+    """Build a single HeteroData graph from one time window."""
 
     data = HeteroData()
 
-    # ── Index mappings ────────────────────────────────────────────────────────
     tx_ids = df_window.index.tolist()
     tx_map = {tid: i for i, tid in enumerate(tx_ids)}
 
@@ -100,46 +80,38 @@ def build_snapshot(df_window: pd.DataFrame,
     all_merchants = df_window["merchant_id"].unique().tolist()
     mer_map = {mid: i for i, mid in enumerate(all_merchants)}
 
-    # ── Node features ─────────────────────────────────────────────────────────
-    # Transactions
+    # Transaction node features + labels
     tx_feats = df_window[tx_feature_cols].fillna(0).values.astype(np.float32)
     data["transaction"].x = torch.tensor(tx_feats)
-    data["transaction"].y = torch.tensor(
-        df_window["is_fraud"].values.astype(np.int64)
-    )
+    data["transaction"].y = torch.tensor(df_window["is_fraud"].values.astype(np.int64))
     data["transaction"].tx_id = torch.tensor(tx_ids)
 
-    # Accounts
+    # Account node features
     acc_df = pd.DataFrame({"account_id": all_accounts})
     acc_df = acc_df.merge(account_features, on="account_id", how="left").fillna(0)
     acc_feat_cols = ["avg_tx_amount", "tx_count_30d", "unique_merchants"]
-    acc_feats = acc_df[acc_feat_cols].values.astype(np.float32)
-    data["account"].x = torch.tensor(acc_feats)
+    data["account"].x = torch.tensor(acc_df[acc_feat_cols].values.astype(np.float32))
 
-    # Merchants
+    # Merchant node features
     mer_df = pd.DataFrame({"merchant_id": all_merchants})
     mer_df = mer_df.merge(merchant_features, on="merchant_id", how="left").fillna(0)
     mer_feat_cols = ["avg_tx_amount", "tx_volume", "fraud_rate_30d"]
-    mer_feats = mer_df[mer_feat_cols].values.astype(np.float32)
-    data["merchant"].x = torch.tensor(mer_feats)
+    data["merchant"].x = torch.tensor(mer_df[mer_feat_cols].values.astype(np.float32))
 
-    # ── Edge indices ──────────────────────────────────────────────────────────
     n_tx = len(tx_ids)
-
-    # transaction → sender account
     src_tx = list(range(n_tx))
+
+    # Edges
     dst_acc_sender = [acc_map[df_window.loc[t, "sender_id"]] for t in tx_ids]
     data["transaction", "sent_by", "account"].edge_index = torch.tensor(
         [src_tx, dst_acc_sender], dtype=torch.long
     )
 
-    # transaction → receiver account
     dst_acc_receiver = [acc_map[df_window.loc[t, "receiver_id"]] for t in tx_ids]
     data["transaction", "received_by", "account"].edge_index = torch.tensor(
         [src_tx, dst_acc_receiver], dtype=torch.long
     )
 
-    # transaction → merchant
     dst_mer = [mer_map[df_window.loc[t, "merchant_id"]] for t in tx_ids]
     data["transaction", "at", "merchant"].edge_index = torch.tensor(
         [src_tx, dst_mer], dtype=torch.long
@@ -148,21 +120,18 @@ def build_snapshot(df_window: pd.DataFrame,
     return data
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
-
 def load_paysim(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    # PaySim columns: step, type, amount, nameOrig, oldbalanceOrg, newbalanceOrig,
-    #                 nameDest, oldbalanceDest, newbalanceDest, isFraud
+    # PaySim: step=hour index, nameOrig=sender, nameDest=receiver, isFraud=label
     df = df.rename(columns={
-        "step": "timestamp",      # step = hour index
+        "step": "timestamp",
         "amount": "amount",
         "nameOrig": "sender_id",
         "nameDest": "receiver_id",
         "isFraud": "is_fraud",
         "type": "tx_type",
     })
-    df["merchant_id"] = df["receiver_id"]   # merchants are destinations in PaySim
+    df["merchant_id"] = df["receiver_id"]
     df["timestamp"] = pd.to_datetime("2024-01-01") + pd.to_timedelta(df["timestamp"], unit="h")
     return df
 
@@ -218,7 +187,7 @@ def build_graphs(paysim_path: str,
     account_features = build_account_features(df)
     merchant_features = build_merchant_features(df)
 
-    # Save flat tabular features for XGBoost / anomaly detection
+    # Save flat tabular features for XGBoost and anomaly detection
     tabular_cols = [
         "amount", "amount_log", "amount_zscore", "velocity_1h", "velocity_24h",
         "hour", "day_of_week", "is_fraud"
@@ -226,7 +195,7 @@ def build_graphs(paysim_path: str,
     df[tabular_cols].to_parquet(output_dir / "features_tabular.parquet", index=False)
     log.info(f"Saved tabular features → {output_dir}/features_tabular.parquet")
 
-    # Temporal train/val/test split (80/10/10 by timestamp)
+    # Temporal 80/10/10 split by timestamp (no random shuffling)
     n = len(df)
     train_end = int(n * 0.80)
     val_end = int(n * 0.90)
@@ -238,7 +207,6 @@ def build_graphs(paysim_path: str,
     for split_name, split_df in splits.items():
         log.info(f"  {split_name}: {len(split_df):,} tx, fraud rate: {split_df['is_fraud'].mean():.4f}")
 
-    # Build per-split graph snapshots
     tx_feature_cols = [
         "amount", "amount_log", "amount_zscore",
         "velocity_1h", "velocity_24h", "hour", "day_of_week"
@@ -264,19 +232,16 @@ def build_graphs(paysim_path: str,
         all_snapshots[split_name] = snapshots
         log.info(f"  → {len(snapshots)} snapshots for {split_name}")
 
-    # Save all graphs
     graph_path = output_dir / "graph.pt"
     torch.save(all_snapshots, graph_path)
     log.info(f"Saved graph → {graph_path}")
     log.info("Graph construction complete.")
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build PyG transaction graphs")
     parser.add_argument("--paysim_path", default="data/raw/paysim.csv")
-    parser.add_argument("--ieee_path", default="data/raw/ieee_cis_train.csv")
+    parser.add_argument("--ieee_path", default="data/raw/train_transaction.csv")
     parser.add_argument("--output_dir", default="data/processed")
     parser.add_argument("--snapshot_hours", type=int, default=24)
     parser.add_argument("--n_workers", type=int, default=8)

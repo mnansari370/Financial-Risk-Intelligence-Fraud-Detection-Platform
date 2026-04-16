@@ -27,7 +27,7 @@ echo "CPUs: $SLURM_CPUS_PER_TASK"
 
 python -m src.graph.build_graph \
     --paysim_path data/raw/paysim.csv \
-    --ieee_path data/raw/ieee_cis_train.csv \
+    --ieee_path data/raw/train_transaction.csv \
     --output_dir data/processed \
     --snapshot_hours 24 \
     --n_workers "$SLURM_CPUS_PER_TASK"

@@ -1,9 +1,12 @@
 """
-GAT Training Script
+Training script for FraudGAT.
 
 Usage:
-  python -m src.models.gnn.train --config configs/gat_config.yaml \
-      --graph_path data/processed/graph.pt --checkpoint_dir src/models/gnn/checkpoints
+  python -m src.models.gnn.train \
+      --config configs/gat_config.yaml \
+      --graph_path data/processed/graph.pt \
+      --checkpoint_dir src/models/gnn/checkpoints \
+      --results_dir results/gat
 """
 
 import argparse
@@ -94,7 +97,6 @@ def train(config_path: str, graph_path: str, checkpoint_dir: str,
     val_snapshots   = graphs["val"]
     log.info(f"  Train snapshots: {len(train_snapshots)} | Val: {len(val_snapshots)}")
 
-    # Infer node feature dimensions from first snapshot
     sample = train_snapshots[0]
     tx_in  = sample["transaction"].x.shape[1]
     acc_in = sample["account"].x.shape[1]

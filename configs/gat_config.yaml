@@ -34,7 +34,7 @@ training:
 
 data:
   paysim_path: "data/raw/paysim.csv"
-  ieee_cis_path: "data/raw/ieee_cis_train.csv"
+  ieee_cis_path: "data/raw/train_transaction.csv"
   processed_graph_path: "data/processed/graph.pt"
   node_features:
     transaction: ["amount", "hour", "day_of_week", "merchant_category",

@@ -1,8 +1,9 @@
 """
-SHAP Explainability Module
+SHAP explainability for XGBoost and GAT models.
 
-- XGBoost: shap.TreeExplainer (fast, exact)
-- GAT:     shap.GradientExplainer (GPU-accelerated)
+XGBoost uses TreeExplainer (exact, fast).
+GAT uses KernelExplainer with a model wrapper since GradientExplainer doesn't
+support heterogeneous PyG graphs out of the box.
 """
 
 import argparse
@@ -32,7 +33,6 @@ def explain_xgboost(checkpoint_path: str, features_path: str,
     df = pd.read_parquet(features_path)
     X = df[feature_cols].fillna(0).values
 
-    # Select top-K scored transactions
     scores_df = pd.read_parquet(scores_path)
     top_indices = scores_df.nlargest(top_k, "score").index.tolist()
     X_top = X[top_indices]
@@ -41,13 +41,11 @@ def explain_xgboost(checkpoint_path: str, features_path: str,
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_top)
 
-    # Save SHAP values
     shap_df = pd.DataFrame(shap_values, columns=feature_cols)
     shap_df["tx_index"] = top_indices
     shap_df.to_parquet(Path(output_dir) / "shap_values_xgb.parquet", index=False)
     log.info(f"SHAP values saved → {output_dir}/shap_values_xgb.parquet")
 
-    # Feature importance summary
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
     importance_df = pd.DataFrame({
         "feature": feature_cols,
@@ -80,7 +78,7 @@ def explain_gat(checkpoint_path: str, graph_path: str,
         out_channels=cfg["out_channels"],
         num_layers=cfg["num_layers"],
         heads=cfg["heads"],
-        dropout=0.0,    # disable dropout for SHAP
+        dropout=0.0,    # disable dropout for explanation
     ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
@@ -106,7 +104,6 @@ def explain_gat(checkpoint_path: str, graph_path: str,
                 logits = model(snapshot.x_dict, snapshot.edge_index_dict)
             return torch.sigmoid(logits).cpu().numpy()
 
-        # GradientExplainer requires a callable that takes numpy and returns numpy
         background = X_tx[:min(50, len(X_tx))].detach().cpu().numpy()
         explainer = shap.KernelExplainer(model_fn, background)
         X_explain = X_tx[mask].detach().cpu().numpy()

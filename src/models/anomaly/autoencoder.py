@@ -1,7 +1,6 @@
 """
-Autoencoder for unsupervised anomaly detection.
-Trained EXCLUSIVELY on legitimate (non-fraud) transactions.
-Fraud detection: high reconstruction error = anomalous.
+Feed-forward autoencoder for unsupervised fraud detection.
+Trained only on legitimate transactions; high reconstruction error = anomalous.
 """
 
 import argparse
@@ -26,7 +25,6 @@ class Autoencoder(nn.Module):
                  decoder_dims: list, dropout: float = 0.1):
         super().__init__()
 
-        # Encoder
         enc_layers = []
         in_dim = input_dim
         for dim in encoder_dims:
@@ -35,7 +33,6 @@ class Autoencoder(nn.Module):
         enc_layers += [nn.Linear(in_dim, latent_dim)]
         self.encoder = nn.Sequential(*enc_layers)
 
-        # Decoder
         dec_layers = [nn.Linear(latent_dim, decoder_dims[0]), nn.ReLU()]
         in_dim = decoder_dims[0]
         for dim in decoder_dims[1:]:
@@ -50,7 +47,7 @@ class Autoencoder(nn.Module):
         return x_hat
 
     def reconstruction_error(self, x: torch.Tensor) -> torch.Tensor:
-        """Per-sample MSE reconstruction error (anomaly score)."""
+        """Per-sample MSE — used as the anomaly score."""
         x_hat = self.forward(x)
         return ((x - x_hat) ** 2).mean(dim=1)
 
@@ -70,11 +67,11 @@ def train_autoencoder(config_path: str, features_path: str, output_dir: str):
     df = pd.read_parquet(features_path)
     feature_cols = [c for c in df.columns if c != "is_fraud"]
 
-    # ── CRITICAL: train ONLY on legitimate transactions ───────────────────────
     n = len(df)
     train_end = int(n * 0.80)
     df_train = df.iloc[:train_end]
 
+    # Train on legitimate transactions only — fraud samples are unseen during training
     df_legit = df_train[df_train["is_fraud"] == 0]
     log.info(f"Legitimate training samples: {len(df_legit):,} "
              f"(from {len(df_train):,} total train)")
@@ -129,24 +126,21 @@ def train_autoencoder(config_path: str, features_path: str, output_dir: str):
                 log.info(f"Early stopping at epoch {epoch}")
                 break
 
-    # Compute and save threshold from validation set
+    # Set anomaly threshold from val set reconstruction errors on legitimate samples
     val_end = int(n * 0.90)
     df_val = df.iloc[train_end:val_end]
-    X_val = torch.tensor(df_val[feature_cols].fillna(0).values.astype(np.float32))
+    df_val_legit = df_val[df_val["is_fraud"] == 0]
+    X_val_legit = torch.tensor(
+        df_val_legit[feature_cols].fillna(0).values.astype(np.float32)
+    ).to(device)
 
     model.eval()
     with torch.no_grad():
-        # Threshold on validation legitimate transactions only
-        df_val_legit = df_val[df_val["is_fraud"] == 0]
-        X_val_legit = torch.tensor(
-            df_val_legit[feature_cols].fillna(0).values.astype(np.float32)
-        ).to(device)
         recon_errors = model.reconstruction_error(X_val_legit).cpu().numpy()
 
     threshold = float(np.percentile(recon_errors, cfg["threshold_percentile"]))
     log.info(f"Anomaly threshold (p{cfg['threshold_percentile']}): {threshold:.6f}")
 
-    # Re-save checkpoint with threshold
     ckpt = torch.load(ckpt_path, map_location="cpu")
     ckpt["threshold"] = threshold
     torch.save(ckpt, ckpt_path)

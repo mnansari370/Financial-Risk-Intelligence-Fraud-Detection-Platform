@@ -1,0 +1,61 @@
+# Data — never commit raw or processed data
+data/raw/
+data/processed/
+data/benchmark/
+
+# Secrets and API keys
+.env
+*.env
+secrets.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments / Conda
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Results and model checkpoints (large files)
+results/
+!results/**/.gitkeep
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.ckpt
+
+# SLURM logs
+slurm/logs/
+!slurm/logs/.gitkeep
+*.out
+*.err
+
+# OS
+.DS_Store
+Thumbs.db

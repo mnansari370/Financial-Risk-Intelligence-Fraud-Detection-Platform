@@ -33,7 +33,7 @@ training:
 
 data:
   paysim_path: "data/raw/paysim.csv"
-  ieee_cis_path: "data/raw/ieee_cis_train.csv"
+  ieee_cis_path: "data/raw/train_transaction.csv"
   processed_features_path: "data/processed/features_tabular.parquet"
   train_ratio: 0.80
   val_ratio: 0.10

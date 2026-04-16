@@ -1,6 +1,7 @@
 """
 Isolation Forest for unsupervised anomaly detection.
-Trained EXCLUSIVELY on legitimate (non-fraud) transactions.
+Trained on legitimate transactions only.
+Scores are negated (higher = more anomalous) and normalised to [0, 1].
 """
 
 import argparse
@@ -36,7 +37,7 @@ def train_isolation_forest(config_path: str, features_path: str, output_dir: str
     df_val   = df.iloc[train_end:val_end]
     df_test  = df.iloc[val_end:]
 
-    # ── Train on legitimate only ──────────────────────────────────────────────
+    # Train on legitimate transactions only
     df_legit = df_train[df_train["is_fraud"] == 0]
     log.info(f"Legitimate training samples: {len(df_legit):,}")
     X_train = df_legit[feature_cols].fillna(0).values
@@ -53,13 +54,10 @@ def train_isolation_forest(config_path: str, features_path: str, output_dir: str
     log.info("Training Isolation Forest...")
     model.fit(X_train)
 
-    # Evaluate on test set
-    # IsolationForest.score_samples: lower = more anomalous, negate for fraud score
+    # score_samples returns lower values for anomalies; negate so higher = more suspicious
     X_test = df_test[feature_cols].fillna(0).values
     y_test = df_test["is_fraud"].values
-    scores = -model.score_samples(X_test)   # higher = more anomalous
-
-    # Normalise to [0, 1]
+    scores = -model.score_samples(X_test)
     scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-8)
 
     test_metrics = compute_metrics(y_test, scores)
