@@ -1,4 +1,6 @@
 # XGBoost Baseline Configuration
+# Aligned to the corrected tabular features written by src/graph/build_graph.py
+
 model:
   name: "XGBoost"
   n_estimators: 500
@@ -10,45 +12,56 @@ model:
   gamma: 0.1
   reg_alpha: 0.1
   reg_lambda: 1.0
-  tree_method: "hist"       # fast histogram method; "gpu_hist" on GPU nodes
-  eval_metric: "aucpr"      # optimise PR-AUC
-  # scale_pos_weight is computed dynamically as neg_count / pos_count
+  tree_method: "hist"
+  eval_metric: "aucpr"
 
 training:
   early_stopping_rounds: 20
   verbose_eval: 50
   n_jobs: 8
 
-  # SMOTE oversampling on training set only
   smote:
     enabled: true
-    sampling_strategy: 0.1  # minority class → 10% of majority after SMOTE
+    sampling_strategy: 0.10
     k_neighbors: 5
     random_state: 42
 
-  # Threshold calibration on validation set
   threshold_calibration:
     enabled: true
     target_recall: 0.80
 
 data:
-  paysim_path: "data/raw/paysim.csv"
-  ieee_cis_path: "data/raw/train_transaction.csv"
   processed_features_path: "data/processed/features_tabular.parquet"
   train_ratio: 0.80
   val_ratio: 0.10
   test_ratio: 0.10
 
 features:
-  numerical: ["amount", "amount_log", "amount_zscore", "velocity_1h",
-              "velocity_24h", "account_age_days", "avg_tx_amount",
-              "tx_count_30d", "unique_merchants"]
-  categorical: ["merchant_category", "hour", "day_of_week", "country_code",
-                "tx_type", "channel"]
+  numerical:
+    - amount
+    - amount_log
+    - amount_zscore
+    - hour
+    - day_of_week
+    - is_night
+    - is_round_amount
+    - is_first_pair_tx
+    - sender_balance_drop
+    - receiver_balance_gain
+    - is_flagged_fraud
+    - velocity_1h_sender
+    - velocity_24h_sender
+    - velocity_1h_receiver
+    - velocity_24h_receiver
   target: "is_fraud"
 
 evaluation:
-  metrics: ["pr_auc", "roc_auc", "f1", "precision_at_recall_80", "fpr"]
+  metrics:
+    - pr_auc
+    - roc_auc
+    - f1
+    - precision_at_recall_80
+    - fpr
 
 paths:
   model_path: "src/models/baseline/xgboost_model.pkl"

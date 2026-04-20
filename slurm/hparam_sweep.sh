@@ -3,7 +3,7 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=08:00:00
@@ -20,6 +20,7 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
 
 cd "$PROJECT_DIR"
+export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
 
 echo "=== Hyperparameter Sweep ==="
 echo "Array task ID: $SLURM_ARRAY_TASK_ID"

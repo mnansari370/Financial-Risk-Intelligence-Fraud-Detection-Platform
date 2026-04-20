@@ -1,112 +1,172 @@
+"""
+FraudEdgeGAT — Graph Attention Network for edge-level transaction fraud detection.
+
+Architecture overview:
+  1. A linear projection maps raw account features into the hidden space.
+  2. Multiple GATConv layers aggregate information from neighbouring accounts,
+     learning which relationships matter via attention weights.
+  3. For each transaction edge, the source embedding, destination embedding,
+     and edge features are concatenated and passed through a small MLP that
+     outputs a single fraud logit.
+
+This edge-centric design means the model answers: "given everything the graph
+knows about the sender account, the receiver account, and the transaction
+itself — how suspicious is this specific payment?"
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv, HeteroConv, Linear
+from torch_geometric.nn import GATConv
 
 
 class FocalLoss(nn.Module):
-    """Focal loss (Lin et al., 2017) — down-weights easy negatives so the model
-    focuses on the hard-to-classify fraud cases."""
+    """
+    Focal loss for binary classification under extreme class imbalance.
 
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
+    Standard cross-entropy treats every sample equally, so on PaySim's 0.13%
+    fraud rate the gradient is overwhelmingly dominated by easy legitimate
+    transactions.  Focal loss down-weights well-classified examples via the
+    (1 - p_t)^gamma term, forcing the model to focus on hard/rare cases.
+
+    alpha upweights the POSITIVE (fraud) class.  For a 0.13% fraud rate,
+    alpha ≈ 0.95 gives roughly 19x more weight to fraud samples — see
+    gat_config.yaml for the chosen value and the rationale.
+    """
+
+    def __init__(self, alpha: float = 0.95, gamma: float = 3.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        bce = F.binary_cross_entropy_with_logits(logits, targets.float(), reduction="none")
-        probs = torch.sigmoid(logits)
-        p_t = probs * targets + (1 - probs) * (1 - targets)
+        targets = targets.float()
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+
+        probs   = torch.sigmoid(logits)
+        # p_t: probability of the true class
+        p_t     = probs * targets + (1 - probs) * (1 - targets)
+        # alpha_t: per-sample class weight
         alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+
         focal_weight = alpha_t * (1 - p_t) ** self.gamma
         return (focal_weight * bce).mean()
 
 
-class FraudGAT(nn.Module):
+class FraudEdgeGAT(nn.Module):
     """
-    Heterogeneous GAT over transaction/account/merchant nodes.
+    Graph Attention Network for edge-level fraud scoring.
 
-    Each transaction node attends over its sender/receiver accounts and merchant,
-    and reverse edges let account/merchant nodes push information back.
-    The final classification head scores transaction nodes only.
+    Graph convention:
+      - Nodes  = accounts (features: velocity stats, volume stats, risk scores)
+      - Edges  = transactions  (features: amount, time, behavioural flags)
+      - Labels = per-edge binary fraud indicator
+
+    Forward pass:
+      encode_nodes  → multi-layer GAT builds contextual account embeddings
+      decode_edges  → MLP(src_emb ‖ dst_emb ‖ edge_attr) → fraud logit
     """
 
-    def __init__(self,
-                 tx_in_channels: int,
-                 acc_in_channels: int,
-                 mer_in_channels: int,
-                 hidden_channels: int = 128,
-                 out_channels: int = 64,
-                 num_layers: int = 3,
-                 heads: int = 4,
-                 dropout: float = 0.3):
+    def __init__(
+        self,
+        node_input_dim: int,
+        edge_input_dim: int,
+        hidden_channels: int = 64,
+        out_channels: int = 32,
+        num_layers: int = 3,
+        heads: int = 4,
+        dropout: float = 0.3,
+        residual: bool = True,
+    ):
         super().__init__()
-        self.dropout = dropout
-        self.num_layers = num_layers
+        self.dropout  = dropout
+        self.residual = residual
 
-        # Project each node type to the same hidden dimension before message passing
-        self.tx_proj  = Linear(tx_in_channels,  hidden_channels)
-        self.acc_proj = Linear(acc_in_channels, hidden_channels)
-        self.mer_proj = Linear(mer_in_channels, hidden_channels)
+        # Project raw node features to hidden_channels before the first GATConv
+        self.node_proj = nn.Linear(node_input_dim, hidden_channels)
 
         self.convs = nn.ModuleList()
-        for i in range(num_layers):
-            in_ch = hidden_channels if i == 0 else hidden_channels * heads
-            conv = HeteroConv({
-                ("transaction", "sent_by",      "account"):  GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("transaction", "received_by",  "account"):  GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("transaction", "at",           "merchant"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                # Reverse edges so accounts/merchants can also send messages back
-                ("account",  "rev_sent_by",     "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("account",  "rev_received_by", "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-                ("merchant", "rev_at",          "transaction"): GATConv(in_ch, hidden_channels, heads=heads, dropout=dropout, add_self_loops=False),
-            }, aggr="sum")
-            self.convs.append(conv)
+        self.norms = nn.ModuleList()
+        for layer_idx in range(num_layers):
+            in_dim = hidden_channels if layer_idx == 0 else hidden_channels * heads
+            self.convs.append(GATConv(
+                in_channels=in_dim,
+                out_channels=hidden_channels,
+                heads=heads,
+                dropout=dropout,
+                concat=True,       # concatenate heads → output dim = hidden * heads
+                add_self_loops=False,
+            ))
+            self.norms.append(nn.BatchNorm1d(hidden_channels * heads))
 
-        self.bns = nn.ModuleList([
-            nn.BatchNorm1d(hidden_channels * heads) for _ in range(num_layers)
-        ])
+        final_node_dim = hidden_channels * heads
 
-        self.head = nn.Sequential(
-            Linear(hidden_channels * heads, out_channels),
+        # Edge classifier: [src ‖ dst ‖ edge_attr] → 1 logit
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(final_node_dim * 2 + edge_input_dim, out_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            Linear(out_channels, 1),
+            nn.Linear(out_channels, 1),
         )
 
-    def forward(self, x_dict: dict, edge_index_dict: dict,
-                return_attention: bool = False):
-        h = {
-            "transaction": F.relu(self.tx_proj(x_dict["transaction"])),
-            "account":     F.relu(self.acc_proj(x_dict["account"])),
-            "merchant":    F.relu(self.mer_proj(x_dict["merchant"])),
-        }
-
-        attention_weights = []
+    def encode_nodes(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """Run GAT layers to produce contextual account embeddings."""
+        h = F.relu(self.node_proj(x))
         for i, conv in enumerate(self.convs):
-            if return_attention:
-                h_new, attn = conv(h, edge_index_dict, return_attention_weights=True)
-                attention_weights.append(attn)
-            else:
-                h_new = conv(h, edge_index_dict)
+            h_new = conv(h, edge_index)
+            h_new = self.norms[i](h_new)
+            h_new = F.relu(h_new)
+            h_new = F.dropout(h_new, p=self.dropout, training=self.training)
+            # Residual connection when shapes match (layers 1+)
+            h = h + h_new if (self.residual and h_new.shape == h.shape) else h_new
+        return h
 
-            h_new["transaction"] = self.bns[i](h_new["transaction"])
-            h_new = {k: F.relu(v) for k, v in h_new.items()}
-            h_new = {k: F.dropout(v, p=self.dropout, training=self.training)
-                     for k, v in h_new.items()}
+    def decode_edges(
+        self,
+        node_emb: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        chunk_size: int = 300_000,
+    ) -> torch.Tensor:
+        """
+        Score each transaction edge using the embeddings of both endpoints.
 
-            if i > 0:
-                h_new = {k: h_new[k] + h.get(k, 0) for k in h_new}
+        Large snapshots (millions of edges) require chunking: building the full
+        [N_edges × (2*hidden + edge_dim)] tensor at once exhausts 16GB VRAM.
+        Chunking processes 300K edges at a time; gradients flow correctly because
+        the final torch.cat re-joins the chunks before the loss is computed.
+        """
+        src, dst = edge_index
+        if src.shape[0] <= chunk_size:
+            edge_input = torch.cat([node_emb[src], node_emb[dst], edge_attr], dim=-1)
+            return self.edge_mlp(edge_input).squeeze(-1)
 
-            h = h_new
+        # Process in chunks to avoid OOM on large snapshots
+        chunks = []
+        for i in range(0, src.shape[0], chunk_size):
+            s = src[i : i + chunk_size]
+            d = dst[i : i + chunk_size]
+            a = edge_attr[i : i + chunk_size]
+            chunks.append(self.edge_mlp(
+                torch.cat([node_emb[s], node_emb[d], a], dim=-1)
+            ).squeeze(-1))
+        return torch.cat(chunks)
 
-        logits = self.head(h["transaction"]).squeeze(-1)
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+    ) -> torch.Tensor:
+        node_emb = self.encode_nodes(x, edge_index)
+        return self.decode_edges(node_emb, edge_index, edge_attr)
 
-        if return_attention:
-            return logits, attention_weights
-        return logits
-
-    def predict_proba(self, x_dict, edge_index_dict) -> torch.Tensor:
-        with torch.no_grad():
-            logits = self.forward(x_dict, edge_index_dict)
-        return torch.sigmoid(logits)
+    @torch.no_grad()
+    def predict_proba(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return sigmoid-calibrated fraud probabilities (no gradient tracking)."""
+        return torch.sigmoid(self.forward(x, edge_index, edge_attr))

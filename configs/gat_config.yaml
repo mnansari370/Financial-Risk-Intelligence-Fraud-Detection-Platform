@@ -1,54 +1,58 @@
-# Graph Attention Network (GAT) Training Configuration
+# Graph Attention Network — Training Configuration
+#
+# Root cause fix: focal_loss.alpha MUST be > 0.5 to upweight the fraud (minority) class.
+# PaySim fraud rate is ~0.13%, so alpha=0.95 gives roughly 19x weight to fraud samples.
+# The previous alpha=0.25 was inverted — it upweighted the majority class, producing
+# near-random predictions (ROC-AUC < 0.5). This is the primary fix for GAT performance.
+
 model:
-  name: "GAT"
-  in_channels: 64          # input feature dimension (after preprocessing)
-  hidden_channels: 128
-  out_channels: 64
-  num_layers: 3
-  heads: 4                 # attention heads per layer
+  name: "FraudEdgeGAT"
+  hidden_channels: 64
+  out_channels: 32
+  num_layers: 3             # ablation: also try 1 and 2 via hparam_sweep.sh
+  heads: 4                  # more heads = richer neighbourhood aggregation
   dropout: 0.3
   residual: true
 
 training:
-  epochs: 100
-  batch_size: 512          # number of transactions per mini-batch
-  learning_rate: 1.0e-3
+  epochs: 200
+  learning_rate: 3.0e-4
   weight_decay: 1.0e-4
   optimizer: "adam"
   scheduler: "cosine"
-  early_stopping_patience: 10
+  early_stopping_patience: 20
   grad_clip: 1.0
 
-  # Focal loss parameters (class imbalance)
+  # Focal loss — alpha upweights the POSITIVE (fraud) class.
+  # For ~0.13% fraud rate, alpha=0.95 gives ~19x weight to fraud samples.
   focal_loss:
-    alpha: 0.25
-    gamma: 2.0
+    alpha: 0.95
+    gamma: 3.0              # stronger focus on hard examples vs default 2.0
 
-  # Temporal graph snapshots
   snapshot_window_hours: 24
 
-  # Train/val/test split (by timestamp)
+  # Strict temporal split — never random-shuffle time-series financial data.
   train_ratio: 0.80
-  val_ratio: 0.10
-  test_ratio: 0.10
+  val_ratio:   0.10
+  test_ratio:  0.10
 
 data:
-  paysim_path: "data/raw/paysim.csv"
-  ieee_cis_path: "data/raw/train_transaction.csv"
-  processed_graph_path: "data/processed/graph.pt"
-  node_features:
-    transaction: ["amount", "hour", "day_of_week", "merchant_category",
-                  "amount_log", "amount_zscore", "velocity_1h", "velocity_24h"]
-    account: ["avg_tx_amount", "tx_count_30d", "unique_merchants",
-              "account_age_days", "country_code"]
-    merchant: ["category", "avg_tx_amount", "fraud_rate_30d", "tx_volume"]
+  paysim_path:          "data/raw/paysim.csv"
+  processed_graph_path: "data/processed/graph_account_edge.pt"
 
 evaluation:
-  threshold: 0.5           # classification threshold (tuned on val set)
-  target_recall: 0.80      # Precision@80%Recall metric
-  metrics: ["pr_auc", "roc_auc", "f1", "precision_at_recall_80"]
+  # PR-AUC is the primary metric for imbalanced fraud detection.
+  # A model predicting all-legitimate achieves 99.87% accuracy but 0.0013 PR-AUC —
+  # accuracy is meaningless here.
+  target_recall: 0.80
+  metrics:
+    - pr_auc
+    - roc_auc
+    - f1
+    - precision_at_recall_80
+    - fpr
 
 paths:
   checkpoint_dir: "src/models/gnn/checkpoints"
-  results_dir: "results/gat"
-  log_dir: "results/gat/logs"
+  results_dir:    "results/gat"
+  log_dir:        "results/gat/logs"
