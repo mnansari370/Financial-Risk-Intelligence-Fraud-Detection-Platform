@@ -1,0 +1,4 @@
+model_a,model_b,flagged_by_both,fraud_caught_by_both,jaccard
+gat,xgboost,1133,1129,0.010027081083950473
+gat,anomaly,18,18,0.00471945464078469
+xgboost,anomaly,22,22,0.00019941806183771

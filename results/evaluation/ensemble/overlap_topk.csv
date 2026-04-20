@@ -1,0 +1,4 @@
+model_a,model_b,flagged_by_both,fraud_caught_by_both,jaccard
+gat,xgboost,0,0,0.0
+gat,anomaly,0,0,0.0
+xgboost,anomaly,0,0,0.0

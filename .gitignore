@@ -41,9 +41,11 @@ env/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Results and model checkpoints (large files)
-results/
-!results/**/.gitkeep
+# Results — exclude large binary files, keep metric CSVs
+results/**/*.parquet
+results/**/*.npy
+results/**/*.npz
+!results/**/*.csv
 *.pt
 *.pth
 *.pkl

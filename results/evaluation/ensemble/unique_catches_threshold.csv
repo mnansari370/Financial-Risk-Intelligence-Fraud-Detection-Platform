@@ -1,0 +1,4 @@
+model,unique_fraud_caught,unique_flags
+gat,0,2673
+xgboost,5918,109180
+anomaly,0,0

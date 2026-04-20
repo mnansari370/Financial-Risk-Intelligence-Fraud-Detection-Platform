@@ -1,0 +1,16 @@
+feature,mean_abs_shap
+sender_balance_drop,6.9789577
+amount_log,1.2389263
+hour,1.0973759
+receiver_balance_gain,0.8973902
+day_of_week,0.6946304
+amount,0.61401296
+is_night,0.35814735
+amount_zscore,0.26250032
+is_round_amount,0.09589579
+velocity_24h_receiver,0.056174878
+is_flagged_fraud,0.031164462
+velocity_1h_receiver,0.028060878
+velocity_24h_sender,0.0018539461
+is_first_pair_tx,0.0
+velocity_1h_sender,0.0
